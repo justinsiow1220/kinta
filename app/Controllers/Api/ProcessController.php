@@ -7,6 +7,74 @@ use Throwable;
 
 class ProcessController extends ResourceController
 {
+    public function index()
+    {
+        $actorId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
+        $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
+        $builder = db_connect()->table('processes p')
+            ->select(
+                'p.id, p.created_by_user_id, p.status, p.started_at, p.ended_at, '
+                . 'p.qty_passed, p.qty_rejected, p.remarks, '
+                . 'm.machine_code, m.machine_name, s.name AS sector_name, '
+                . 'a.name AS activity_name, so.so_number, so.customer_name, '
+                . 'creator.name AS created_by_name'
+            )
+            ->join('machines m', 'm.id = p.machine_id')
+            ->join('sectors s', 's.id = p.sector_id')
+            ->join('activities a', 'a.id = p.activity_id')
+            ->join('sales_orders so', 'so.id = p.sales_order_id', 'left')
+            ->join('users creator', 'creator.id = p.created_by_user_id', 'left')
+            ->where('p.deleted_at', null);
+
+        if (! in_array($role, ['admin', 'supervisor'], true)) {
+            $builder->where('p.created_by_user_id', $actorId);
+        }
+
+        $records = $builder->orderBy('p.started_at', 'DESC')->orderBy('p.id', 'DESC')->get()->getResultArray();
+        return $this->respondWithData('Process records loaded.', $records);
+    }
+
+    /** Soft-deletes a completed process, preserving its history in MySQL. */
+    public function delete($id = null)
+    {
+        $processId = $this->positiveId($id);
+        if ($processId === null) {
+            return $this->respondWithError('A valid process ID is required.', 400);
+        }
+
+        $actorId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
+        $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
+        $db = db_connect();
+        $process = $db->table('processes')
+            ->select('id, created_by_user_id, status')
+            ->where('id', $processId)
+            ->where('deleted_at', null)
+            ->get()->getRowArray();
+
+        if ($process === null) {
+            return $this->respondWithError('Process record not found.', 404);
+        }
+        if ($role !== 'admin' && $role !== 'supervisor' && (int) ($process['created_by_user_id'] ?? 0) !== $actorId) {
+            return $this->respondWithError('You may delete only process records created by your account.', 403);
+        }
+        if ($process['status'] !== 'completed') {
+            return $this->respondWithError('Only completed process records can be deleted.', 409);
+        }
+
+        $now = date('Y-m-d H:i:s');
+        $db->table('processes')->where('id', $processId)->where('deleted_at', null)->update([
+            'deleted_at' => $now,
+            'deleted_by_user_id' => $actorId,
+            'updated_at' => $now,
+        ]);
+
+        return $this->respond([
+            'success' => true,
+            'message' => 'Process record archived. Its transaction history remains in the database.',
+            'data' => ['id' => $processId, 'deleted_at' => $now],
+        ]);
+    }
+
     public function preflight()
     {
         return $this->response->setStatusCode(204);
@@ -31,6 +99,7 @@ class ProcessController extends ResourceController
             ->join('sales_orders so', 'so.id = p.sales_order_id', 'left')
             ->join('users u', 'u.id = p.current_supervisor_id')
             ->where('p.status', 'active')
+            ->where('p.deleted_at', null)
             ->orderBy('p.started_at', 'DESC')
             ->get()
             ->getResultArray();
@@ -87,6 +156,7 @@ class ProcessController extends ResourceController
             ->join('sales_orders so', 'so.id = p.sales_order_id', 'left')
             ->join('users current_pic', 'current_pic.id = p.current_supervisor_id')
             ->where('p.id', $processId)
+            ->where('p.deleted_at', null)
             ->get()
             ->getRowArray();
 
@@ -186,7 +256,7 @@ class ProcessController extends ResourceController
         $process = $db->table('processes')
             ->select('id, status')
             ->where('id', $processId)
-            ->get()
+            ->where('deleted_at', null)            ->get()
             ->getRowArray();
 
         if ($process === null) {
@@ -278,7 +348,7 @@ class ProcessController extends ResourceController
         $process = $db->table('processes')
             ->select('id, status')
             ->where('id', $processId)
-            ->get()
+            ->where('deleted_at', null)            ->get()
             ->getRowArray();
 
         if ($process === null) {
@@ -378,7 +448,7 @@ class ProcessController extends ResourceController
         $process = $db->table('processes')
             ->select('id, status, current_supervisor_id')
             ->where('id', $processId)
-            ->get()
+            ->where('deleted_at', null)            ->get()
             ->getRowArray();
 
         if ($process === null) {
@@ -400,7 +470,7 @@ class ProcessController extends ResourceController
         try {
             $db->table('processes')
                 ->where('id', $processId)
-                ->where('status', 'active')
+                ->where('deleted_at', null)                ->where('status', 'active')
                 ->update([
                     'current_supervisor_id' => $supervisorId,
                     'updated_at'            => $now,
@@ -504,7 +574,7 @@ class ProcessController extends ResourceController
         $process = $db->table('processes')
             ->select('id, status')
             ->where('id', $processId)
-            ->get()
+            ->where('deleted_at', null)            ->get()
             ->getRowArray();
 
         if ($process === null) {
@@ -671,6 +741,7 @@ class ProcessController extends ResourceController
 
         try {
             $db->table('processes')->insert([
+                'created_by_user_id'    => (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id'),
                 'machine_id'            => $machineId,
                 'sector_id'             => $sectorId,
                 'activity_id'           => $activityId,
@@ -770,7 +841,7 @@ class ProcessController extends ResourceController
         $process = $db->table('processes')
             ->select('id, status')
             ->where('id', $processId)
-            ->get()
+            ->where('deleted_at', null)            ->get()
             ->getRowArray();
 
         if ($process === null) {
@@ -786,7 +857,7 @@ class ProcessController extends ResourceController
         try {
             $db->table('processes')
                 ->where('id', $processId)
-                ->where('status', 'active')
+                ->where('deleted_at', null)                ->where('status', 'active')
                 ->update([
                     'status'       => 'completed',
                     'ended_at'     => $now,
@@ -829,7 +900,7 @@ class ProcessController extends ResourceController
         $completed = $db->table('processes')
             ->select('id, status, ended_at, qty_passed, qty_rejected, remarks')
             ->where('id', $processId)
-            ->get()
+            ->where('deleted_at', null)            ->get()
             ->getRowArray();
 
         return $this->respond([
@@ -907,3 +978,4 @@ class ProcessController extends ResourceController
         ], $status);
     }
 }
+

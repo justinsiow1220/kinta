@@ -60,6 +60,9 @@ Vagrantfile
 /writable/uploads/*
 !/writable/uploads/index.html
 
+# Local offline-grant signing keys must never be committed.
+/writable/keys/*.pem
+
 /writable/debugbar/*
 !/writable/debugbar/index.html
 
