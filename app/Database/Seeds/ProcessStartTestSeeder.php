@@ -124,10 +124,10 @@ class ProcessStartTestSeeder extends Seeder
         string $now,
     ): int {
         return $this->findOrCreate(
-            'users',
-            ['employee_no' => $employeeNo],
+            'workforce',
+            ['staff_id' => $employeeNo],
             [
-                'employee_no'  => $employeeNo,
+                'staff_id'  => $employeeNo,
                 'name'         => $name,
                 'username'     => $username,
                 'password_hash' => password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT),

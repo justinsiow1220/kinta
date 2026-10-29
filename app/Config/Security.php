@@ -15,7 +15,9 @@ class Security extends BaseConfig
      *
      * @var string 'cookie' or 'session'
      */
-    public string $csrfProtection = 'cookie';
+    // The admin portal uses CI4 sessions, so bind CSRF tokens to the same
+    // session instead of relying on a separate cookie token.
+    public string $csrfProtection = 'session';
 
     /**
      * --------------------------------------------------------------------------

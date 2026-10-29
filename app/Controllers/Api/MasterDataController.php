@@ -87,6 +87,7 @@ class MasterDataController extends ResourceController
         $records = db_connect()
             ->table('sales_orders')
             ->select('id, so_number, customer_name, batch_qty, status')
+            ->where('status', 'active')
             ->orderBy('so_number', 'DESC')
             ->get()
             ->getResultArray();

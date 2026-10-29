@@ -107,9 +107,9 @@ class ProcessSyncController extends ResourceController
 
         $initialSupervisorId = null;
         if ($picHistory !== [] && is_array($picHistory[0])) {
-            $initialSupervisorId = $this->positiveId($picHistory[0]['supervisor_id'] ?? [0]['supervisor_id'] ?? $row['supervisor_workforce_id'] ?? null);
+            $initialSupervisorId = $this->positiveId($picHistory[0]['supervisor_id'] ?? $picHistory[0]['supervisor_workforce_id'] ?? null);
         }
-        $initialSupervisorId ??= $this->positiveId($processData['current_supervisor_id'] ?? ['current_supervisor_workforce_id'] ?? null);
+        $initialSupervisorId ??= $this->positiveId($processData['current_supervisor_id'] ?? $processData['current_supervisor_workforce_id'] ?? null);
 
         $startKey = $localId . ':start';
         $db = db_connect();
@@ -145,7 +145,7 @@ class ProcessSyncController extends ResourceController
             }
         }
 
-        $now = date('Y-m-d H:i:s');
+        $now = gmdate('Y-m-d H:i:s');
         $db->transBegin();
 
         try {
@@ -156,7 +156,10 @@ class ProcessSyncController extends ResourceController
                 if ($startReceipt !== null) {
                     $serverProcessId = (int) $startReceipt['process_id'];
                 } else {
-                    $startedAt = $this->dateTimeValue($processData['started_at'] ?? null, $now);
+                    // Old offline clients sent local timestamps without an offset;
+                    // timestamps for an already-created server process are UTC.
+                    $startTimezone = $serverProcessId === null ? 'Asia/Kuala_Lumpur' : 'UTC';
+                    $startedAt = $this->dateTimeValue($processData['started_at'] ?? null, $now, $startTimezone);
                     $description = $processData['description'] ?? null;
                     if ($description !== null && ! is_string($description)) {
                         throw new \RuntimeException('description must be a string or null.', 422);
@@ -412,7 +415,7 @@ class ProcessSyncController extends ResourceController
         }
     }
 
-    private function dateTimeValue($value, string $fallback): string
+    private function dateTimeValue($value, string $fallback, string $assumedTimezone = 'Asia/Kuala_Lumpur'): string
     {
         if ($value === null || $value === '') {
             return $fallback;
@@ -420,11 +423,15 @@ class ProcessSyncController extends ResourceController
         if (! is_string($value)) {
             throw new \RuntimeException('A queued timestamp is invalid.', 422);
         }
-        $timestamp = strtotime($value);
-        if ($timestamp === false) {
+        try {
+            $hasTimezone = preg_match('/(?:Z|[+-]\d{2}:?\d{2})$/i', trim($value)) === 1;
+            $sourceTimezone = new \DateTimeZone($hasTimezone ? 'UTC' : $assumedTimezone);
+            $timestamp = new \DateTimeImmutable($value, $sourceTimezone);
+        } catch (Throwable) {
             throw new \RuntimeException('A queued timestamp is invalid.', 422);
         }
-        return date('Y-m-d H:i:s', $timestamp);
+
+        return $timestamp->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
     }
 
     private function positiveId($value): ?int

@@ -58,3 +58,4 @@ $routes->options('api/processes/(:num)/pic', 'Api\\ProcessController::preflight'
 $routes->get('api/processes/(:num)/operator-history', 'Api\\ProcessController::operatorHistory/$1', ['filter' => 'offlineGrant:process.read']);
 $routes->put('api/processes/(:num)/operators', 'Api\\ProcessController::updateOperators/$1', ['filter' => 'offlineGrant:operator.assign']);
 $routes->options('api/processes/(:num)/operators', 'Api\\ProcessController::preflight');
+$routes->get('api/test-email', 'EmailController::send');
