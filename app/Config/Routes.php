@@ -4,6 +4,20 @@ use CodeIgniter\Router\RouteCollection;
 
 /** @var RouteCollection $routes */
 $routes->get('/', 'Home::index');
+$routes->get('admin/login', 'Admin\\PortalController::login');
+$routes->post('admin/login', 'Admin\\PortalController::login', ['filter' => 'csrf']);
+$routes->group('admin', ['filter' => 'adminAuth'], static function ($routes) {
+    $routes->get('/', 'Admin\\PortalController::home');
+    $routes->post('logout', 'Admin\\PortalController::logout', ['filter' => 'csrf']);
+    $routes->get('workforce', 'Admin\\PortalController::workforce');
+    $routes->post('workforce', 'Admin\\PortalController::workforce', ['filter' => 'csrf']);
+    $routes->post('workforce/(:num)/toggle', 'Admin\\PortalController::toggleWorkforce/$1', ['filter' => 'csrf']);
+    $routes->get('operations', 'Admin\\PortalController::processes');
+    $routes->get('operations/(:num)', 'Admin\\PortalController::processDetails/$1');
+    $routes->get('master-data/(:segment)', 'Admin\\PortalController::master/$1');
+    $routes->post('master-data/(:segment)', 'Admin\\PortalController::saveMaster/$1', ['filter' => 'csrf']);
+    $routes->post('master-data/(:segment)/(:num)/toggle', 'Admin\\PortalController::toggleMaster/$1/$2', ['filter' => 'csrf']);
+});
 $routes->get('api/flutter-test', 'Api\\FlutterTestController::index');
 $routes->get('api/mysql-test', 'Api\\DatabaseTestController::index');
 $routes->get('api/flutter-db-test', 'Api\\DatabaseTestController::records');
@@ -19,8 +33,6 @@ $routes->get('api/master-data/sectors', 'Api\\MasterDataController::sectors', ['
 $routes->get('api/master-data/activities', 'Api\\MasterDataController::activities', ['filter' => 'offlineGrant:master.read']);
 $routes->get('api/master-data/sales-orders', 'Api\\MasterDataController::salesOrders', ['filter' => 'offlineGrant:master.read']);
 $routes->get('api/master-data/problems', 'Api\\MasterDataController::problems', ['filter' => 'offlineGrant:master.read']);
-$routes->post('api/auth/register', 'Api\\AuthController::register');
-$routes->options('api/auth/register', 'Api\\AuthController::preflight');
 $routes->post('api/auth/login', 'Api\\AuthController::login');
 $routes->options('api/auth/login', 'Api\\AuthController::preflight');
 $routes->get('api/processes/active', 'Api\\ProcessController::active', ['filter' => 'offlineGrant:process.read']);

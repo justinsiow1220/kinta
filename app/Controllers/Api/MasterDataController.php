@@ -9,9 +9,9 @@ class MasterDataController extends ResourceController
     public function users()
     {
         $builder = db_connect()
-            ->table('users')
-            ->select('id, employee_no, name, role, status')
-            ->where('status', 'active');
+            ->table('workforce')
+            ->select('id, staff_id AS employee_no, name, role, status')
+            ->where('status', 'active')->whereIn('role', ['supervisor', 'operator', 'qc']);
 
         $role = $this->request->getGet('role');
         if ($role !== null && $role !== '') {

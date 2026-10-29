@@ -83,8 +83,8 @@ class OfflineGrantService
         }
 
         $userId = (int) ($claims['user_id'] ?? 0);
-        $user = db_connect()->table('users')
-            ->select('id, employee_no, name, username, role, status')
+        $user = db_connect()->table('workforce')
+            ->select('id, staff_id AS employee_no, name, username, role, status')
             ->where('id', $userId)
             ->where('status', 'active')
             ->get()
@@ -175,13 +175,9 @@ class OfflineGrantService
     public static function permissionsForRole(string $role): array
     {
         $common = ['master.read', 'process.read', 'process.sync'];
-        return match ($role) {
-            'admin'      => [...$common, 'process.write', 'process.delete', 'qc.write', 'pic.change', 'operator.assign', 'problem.report', 'sync.resolve'],
-            'supervisor' => [...$common, 'process.write', 'process.delete', 'qc.write', 'pic.change', 'operator.assign', 'problem.report'],
-            'operator'   => [...$common, 'process.write', 'process.delete', 'operator.assign', 'problem.report'],
-            'qc'         => [...$common, 'qc.write', 'problem.report'],
-            default      => [],
-        };
+        return $role === 'supervisor'
+            ? [...$common, 'process.write', 'process.delete', 'qc.write', 'pic.change', 'operator.assign', 'problem.report']
+            : [];
     }
 
     private function privateKey()

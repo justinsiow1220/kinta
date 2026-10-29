@@ -26,7 +26,7 @@ class ProcessSyncController extends ResourceController
         }
 
         $authenticatedUserId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
-        $payloadActorId = $this->positiveId($payload['actor_user_id'] ?? null);
+        $payloadActorId = $this->positiveId($payload['actor_user_id'] ?? $payload['actor_workforce_id'] ?? null);
         if ($authenticatedUserId < 1 || $payloadActorId !== $authenticatedUserId) {
             return $this->respondWithError('The queued process belongs to a different or unverified account.', 403, 'ACTOR_MISMATCH');
         }
@@ -107,9 +107,9 @@ class ProcessSyncController extends ResourceController
 
         $initialSupervisorId = null;
         if ($picHistory !== [] && is_array($picHistory[0])) {
-            $initialSupervisorId = $this->positiveId($picHistory[0]['supervisor_id'] ?? null);
+            $initialSupervisorId = $this->positiveId($picHistory[0]['supervisor_id'] ?? [0]['supervisor_id'] ?? $row['supervisor_workforce_id'] ?? null);
         }
-        $initialSupervisorId ??= $this->positiveId($processData['current_supervisor_id'] ?? null);
+        $initialSupervisorId ??= $this->positiveId($processData['current_supervisor_id'] ?? ['current_supervisor_workforce_id'] ?? null);
 
         $startKey = $localId . ':start';
         $db = db_connect();
@@ -140,7 +140,7 @@ class ProcessSyncController extends ResourceController
             if ($salesOrderId !== null && ! $db->table('sales_orders')->where('id', $salesOrderId)->countAllResults()) {
                 return $this->respondWithError('The selected sales order no longer exists.', 422);
             }
-            if ($operatorIds !== [] && $db->table('users')->whereIn('id', $operatorIds)->where('role', 'operator')->where('status', 'active')->countAllResults() !== count($operatorIds)) {
+            if ($operatorIds !== [] && $db->table('workforce')->whereIn('id', $operatorIds)->where('role', 'operator')->where('status', 'active')->countAllResults() !== count($operatorIds)) {
                 return $this->respondWithError('One or more selected operators are no longer active.', 422);
             }
         }
@@ -162,12 +162,12 @@ class ProcessSyncController extends ResourceController
                         throw new \RuntimeException('description must be a string or null.', 422);
                     }
                     $db->table('processes')->insert([
-                        'created_by_user_id' => $this->actorUserId,
+                        'created_by_workforce_id' => $this->actorUserId,
                         'machine_id' => $machineId,
                         'sector_id' => $sectorId,
                         'activity_id' => $activityId,
                         'sales_order_id' => $salesOrderId,
-                        'current_supervisor_id' => $initialSupervisorId,
+                        'current_supervisor_workforce_id' => $initialSupervisorId,
                         'description' => $description,
                         'status' => 'active',
                         'started_at' => $startedAt,
@@ -177,14 +177,14 @@ class ProcessSyncController extends ResourceController
                     $serverProcessId = (int) $db->insertID();
                     $db->table('process_pic_history')->insert([
                         'process_id' => $serverProcessId,
-                        'supervisor_id' => $initialSupervisorId,
+                        'supervisor_workforce_id' => $initialSupervisorId,
                         'started_at' => $startedAt,
                         'created_at' => $now,
                     ]);
                     if ($operatorIds !== []) {
                         $assignments = array_map(static fn (int $operatorId): array => [
                             'process_id' => $serverProcessId,
-                            'user_id' => $operatorId,
+                            'workforce_id' => $operatorId,
                             'assigned_at' => $startedAt,
                             'created_at' => $now,
                         ], $operatorIds);
@@ -201,7 +201,7 @@ class ProcessSyncController extends ResourceController
             if ($process['deleted_at'] !== null) {
                 throw new \RuntimeException('This process was archived on the server. Review the local record before syncing more changes.', 409);
             }
-            if ((int) ($process['created_by_user_id'] ?? 0) !== $this->actorUserId) {
+            if ((int) ($process['created_by_workforce_id'] ?? 0) !== $this->actorUserId) {
                 throw new \RuntimeException('This process is owned by another account or predates account binding. Review it before syncing.', 409);
             }
 
@@ -213,7 +213,7 @@ class ProcessSyncController extends ResourceController
                 if ($this->hasReceipt($db, $key)) {
                     continue;
                 }
-                $qcUserId = $this->positiveId($inspection['qc_user_id'] ?? null);
+                $qcUserId = $this->positiveId($inspection['qc_user_id'] ?? $inspection['qc_workforce_id'] ?? null);
                 $validQuantity = true;
                 $quantity = $this->optionalQuantity(['quantity' => $inspection['quantity'] ?? null], 'quantity', $validQuantity);
                 if ($qcUserId === null || ! $validQuantity || $quantity === null || ! $this->userExistsWithRole($db, $qcUserId, 'qc')) {
@@ -222,7 +222,7 @@ class ProcessSyncController extends ResourceController
                 $inspectedAt = $this->dateTimeValue($inspection['inspected_at'] ?? null, $now);
                 $db->table('qc_inspections')->insert([
                     'process_id' => $serverProcessId,
-                    'qc_user_id' => $qcUserId,
+                    'qc_workforce_id' => $qcUserId,
                     'inspection_time' => $inspectedAt,
                     'quantity' => $quantity,
                     'created_at' => $now,
@@ -236,7 +236,7 @@ class ProcessSyncController extends ResourceController
                 if (! is_array($row)) {
                     throw new \RuntimeException('PIC history contains an invalid row.', 422);
                 }
-                $supervisorId = $this->positiveId($row['supervisor_id'] ?? null);
+                $supervisorId = $this->positiveId($row['supervisor_id'] ?? $row['supervisor_workforce_id'] ?? null);
                 if ($supervisorId === null) {
                     throw new \RuntimeException('PIC history contains an invalid supervisor ID.', 422);
                 }
@@ -244,9 +244,9 @@ class ProcessSyncController extends ResourceController
             }
             if ($localPicIds !== []) {
                 $serverPicRows = $db->table('process_pic_history')
-                    ->select('supervisor_id')->where('process_id', $serverProcessId)
+                    ->select('supervisor_workforce_id')->where('process_id', $serverProcessId)
                     ->orderBy('started_at', 'ASC')->orderBy('id', 'ASC')->get()->getResultArray();
-                $serverPicIds = array_map(static fn (array $row): int => (int) $row['supervisor_id'], $serverPicRows);
+                $serverPicIds = array_map(static fn (array $row): int => (int) $row['supervisor_workforce_id'], $serverPicRows);
                 if (count($serverPicIds) > count($localPicIds)
                     || array_slice($localPicIds, 0, count($serverPicIds)) !== $serverPicIds) {
                     throw new \RuntimeException('PIC history changed on the server. Review this process before syncing.', 409);
@@ -269,17 +269,17 @@ class ProcessSyncController extends ResourceController
                     }
                     $startedAt = $this->dateTimeValue($picHistory[$index]['started_at'] ?? null, $now);
                     $db->table('processes')->where('id', $serverProcessId)->update([
-                        'current_supervisor_id' => $supervisorId,
+                        'current_supervisor_workforce_id' => $supervisorId,
                         'updated_at' => $now,
                     ]);
                     $db->table('process_pic_history')->where('process_id', $serverProcessId)->where('ended_at', null)->update(['ended_at' => $startedAt]);
                     $db->table('process_pic_history')->insert([
                         'process_id' => $serverProcessId,
-                        'supervisor_id' => $supervisorId,
+                        'supervisor_workforce_id' => $supervisorId,
                         'started_at' => $startedAt,
                         'created_at' => $now,
                     ]);
-                    $process['current_supervisor_id'] = $supervisorId;
+                    $process['current_supervisor_workforce_id'] = $supervisorId;
                     $this->recordReceipt($db, $key, $serverProcessId, 'pic', $now);
                 }
             }
@@ -406,7 +406,7 @@ class ProcessSyncController extends ResourceController
                 'client_action_key' => $key,
                 'process_id' => $processId,
                 'action_type' => $type,
-                'actor_user_id' => $this->actorUserId,
+                'actor_workforce_id' => $this->actorUserId,
                 'created_at' => $now,
             ]);
         }
@@ -461,7 +461,7 @@ class ProcessSyncController extends ResourceController
 
     private function userExistsWithRole($db, int $id, string $role): bool
     {
-        return (bool) $db->table('users')->where('id', $id)->where('role', $role)->where('status', 'active')->countAllResults();
+        return (bool) $db->table('workforce')->where('id', $id)->where('role', $role)->where('status', 'active')->countAllResults();
     }
 
     private function respondWithError(string $message, int $status, ?string $errorCode = null, ?array $data = null)

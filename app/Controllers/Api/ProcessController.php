@@ -13,7 +13,7 @@ class ProcessController extends ResourceController
         $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
         $builder = db_connect()->table('processes p')
             ->select(
-                'p.id, p.created_by_user_id, p.status, p.started_at, p.ended_at, '
+                'p.id, p.created_by_workforce_id, p.status, p.started_at, p.ended_at, '
                 . 'p.qty_passed, p.qty_rejected, p.remarks, '
                 . 'm.machine_code, m.machine_name, s.name AS sector_name, '
                 . 'a.name AS activity_name, so.so_number, so.customer_name, '
@@ -23,11 +23,11 @@ class ProcessController extends ResourceController
             ->join('sectors s', 's.id = p.sector_id')
             ->join('activities a', 'a.id = p.activity_id')
             ->join('sales_orders so', 'so.id = p.sales_order_id', 'left')
-            ->join('users creator', 'creator.id = p.created_by_user_id', 'left')
+            ->join('workforce creator', 'creator.id = p.created_by_workforce_id', 'left')
             ->where('p.deleted_at', null);
 
         if (! in_array($role, ['admin', 'supervisor'], true)) {
-            $builder->where('p.created_by_user_id', $actorId);
+            $builder->where('p.created_by_workforce_id', $actorId);
         }
 
         $records = $builder->orderBy('p.started_at', 'DESC')->orderBy('p.id', 'DESC')->get()->getResultArray();
@@ -46,7 +46,7 @@ class ProcessController extends ResourceController
         $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
         $db = db_connect();
         $process = $db->table('processes')
-            ->select('id, created_by_user_id, status')
+            ->select('id, created_by_workforce_id, status')
             ->where('id', $processId)
             ->where('deleted_at', null)
             ->get()->getRowArray();
@@ -54,7 +54,7 @@ class ProcessController extends ResourceController
         if ($process === null) {
             return $this->respondWithError('Process record not found.', 404);
         }
-        if ($role !== 'admin' && $role !== 'supervisor' && (int) ($process['created_by_user_id'] ?? 0) !== $actorId) {
+        if ($role !== 'admin' && $role !== 'supervisor' && (int) ($process['created_by_workforce_id'] ?? 0) !== $actorId) {
             return $this->respondWithError('You may delete only process records created by your account.', 403);
         }
         if ($process['status'] !== 'completed') {
@@ -64,7 +64,7 @@ class ProcessController extends ResourceController
         $now = date('Y-m-d H:i:s');
         $db->table('processes')->where('id', $processId)->where('deleted_at', null)->update([
             'deleted_at' => $now,
-            'deleted_by_user_id' => $actorId,
+            'deleted_by_workforce_id' => $actorId,
             'updated_at' => $now,
         ]);
 
@@ -90,14 +90,14 @@ class ProcessController extends ResourceController
                 . 'p.sector_id, s.name AS sector_name, '
                 . 'p.activity_id, a.name AS activity_name, '
                 . 'p.sales_order_id, so.so_number, '
-                . 'p.current_supervisor_id, u.name AS supervisor_name, '
+                . 'p.current_supervisor_workforce_id, u.name AS supervisor_name, '
                 . 'p.status, p.started_at'
             )
             ->join('machines m', 'm.id = p.machine_id')
             ->join('sectors s', 's.id = p.sector_id')
             ->join('activities a', 'a.id = p.activity_id')
             ->join('sales_orders so', 'so.id = p.sales_order_id', 'left')
-            ->join('users u', 'u.id = p.current_supervisor_id')
+            ->join('workforce u', 'u.id = p.current_supervisor_workforce_id')
             ->where('p.status', 'active')
             ->where('p.deleted_at', null)
             ->orderBy('p.started_at', 'DESC')
@@ -110,8 +110,8 @@ class ProcessController extends ResourceController
 
         $processIds = array_map(static fn (array $record): int => (int) $record['id'], $records);
         $operatorRows = $db->table('process_operators po')
-            ->select('po.process_id, po.user_id, u.name AS operator_name')
-            ->join('users u', 'u.id = po.user_id')
+            ->select('po.process_id, po.workforce_id, u.name AS operator_name')
+            ->join('workforce u', 'u.id = po.workforce_id')
             ->whereIn('po.process_id', $processIds)
             ->where('po.removed_at', null)
             ->orderBy('u.name', 'ASC')
@@ -121,7 +121,7 @@ class ProcessController extends ResourceController
         $operatorsByProcess = [];
         foreach ($operatorRows as $operatorRow) {
             $operatorsByProcess[(int) $operatorRow['process_id']][] = [
-                'id'   => (int) $operatorRow['user_id'],
+                'id'   => (int) $operatorRow['workforce_id'],
                 'name' => $operatorRow['operator_name'],
             ];
         }
@@ -148,13 +148,13 @@ class ProcessController extends ResourceController
                 . 'p.qty_passed, p.qty_rejected, p.remarks, '
                 . 'm.machine_code, m.machine_name, s.name AS sector_name, '
                 . 'a.name AS activity_name, so.so_number, so.customer_name, so.batch_qty, '
-                . 'p.current_supervisor_id, current_pic.name AS current_supervisor_name'
+                . 'p.current_supervisor_workforce_id, current_pic.name AS current_supervisor_name'
             )
             ->join('machines m', 'm.id = p.machine_id')
             ->join('sectors s', 's.id = p.sector_id')
             ->join('activities a', 'a.id = p.activity_id')
             ->join('sales_orders so', 'so.id = p.sales_order_id', 'left')
-            ->join('users current_pic', 'current_pic.id = p.current_supervisor_id')
+            ->join('workforce current_pic', 'current_pic.id = p.current_supervisor_workforce_id')
             ->where('p.id', $processId)
             ->where('p.deleted_at', null)
             ->get()
@@ -165,8 +165,8 @@ class ProcessController extends ResourceController
         }
 
         $process['operators'] = $db->table('process_operators po')
-            ->select('po.id, po.user_id, u.name AS operator_name, po.assigned_at, po.removed_at')
-            ->join('users u', 'u.id = po.user_id')
+            ->select('po.id, po.workforce_id, u.name AS operator_name, po.assigned_at, po.removed_at')
+            ->join('workforce u', 'u.id = po.workforce_id')
             ->where('po.process_id', $processId)
             ->orderBy('po.assigned_at', 'ASC')
             ->orderBy('po.id', 'ASC')
@@ -174,8 +174,8 @@ class ProcessController extends ResourceController
             ->getResultArray();
 
         $process['qc_inspections'] = $db->table('qc_inspections qi')
-            ->select('qi.id, qi.qc_user_id, u.name AS qc_user_name, qi.inspection_time, qi.quantity')
-            ->join('users u', 'u.id = qi.qc_user_id')
+            ->select('qi.id, qi.qc_workforce_id, u.name AS qc_user_name, qi.inspection_time, qi.quantity')
+            ->join('workforce u', 'u.id = qi.qc_workforce_id')
             ->where('qi.process_id', $processId)
             ->orderBy('qi.inspection_time', 'DESC')
             ->orderBy('qi.id', 'DESC')
@@ -191,8 +191,8 @@ class ProcessController extends ResourceController
             ->getResultArray();
 
         $process['pic_history'] = $db->table('process_pic_history ph')
-            ->select('ph.id, ph.supervisor_id, u.name AS supervisor_name, ph.started_at, ph.ended_at')
-            ->join('users u', 'u.id = ph.supervisor_id')
+            ->select('ph.id, ph.supervisor_workforce_id, u.name AS supervisor_name, ph.started_at, ph.ended_at')
+            ->join('workforce u', 'u.id = ph.supervisor_workforce_id')
             ->where('ph.process_id', $processId)
             ->orderBy('ph.started_at', 'ASC')
             ->orderBy('ph.id', 'ASC')
@@ -219,8 +219,8 @@ class ProcessController extends ResourceController
         }
 
         $records = $db->table('qc_inspections qi')
-            ->select('qi.id, qi.process_id, qi.qc_user_id, u.name AS qc_user_name, qi.inspection_time, qi.quantity')
-            ->join('users u', 'u.id = qi.qc_user_id')
+            ->select('qi.id, qi.process_id, qi.qc_workforce_id, u.name AS qc_user_name, qi.inspection_time, qi.quantity')
+            ->join('workforce u', 'u.id = qi.qc_workforce_id')
             ->where('qi.process_id', $processId)
             ->orderBy('qi.inspection_time', 'DESC')
             ->orderBy('qi.id', 'DESC')
@@ -242,12 +242,12 @@ class ProcessController extends ResourceController
             return $this->respondWithError('A JSON request body is required.', 400);
         }
 
-        $qcUserId = $this->positiveId($payload['qc_user_id'] ?? null);
+        $qcUserId = $this->positiveId($payload['qc_user_id'] ?? $payload['qc_workforce_id'] ?? null);
         $validQuantity = true;
         $quantity = $this->optionalQuantity($payload, 'quantity', $validQuantity);
         if ($qcUserId === null || ! $validQuantity || $quantity === null) {
             return $this->respondWithError(
-                'qc_user_id must be a positive integer and quantity must be an unsigned integer.',
+                'qc_workforce_id must be a positive integer and quantity must be an unsigned integer.',
                 422,
             );
         }
@@ -272,7 +272,7 @@ class ProcessController extends ResourceController
         $now = date('Y-m-d H:i:s');
         $inserted = $db->table('qc_inspections')->insert([
             'process_id'      => $processId,
-            'qc_user_id'      => $qcUserId,
+            'qc_workforce_id'      => $qcUserId,
             'inspection_time' => $now,
             'quantity'        => $quantity,
             'created_at'      => $now,
@@ -285,8 +285,8 @@ class ProcessController extends ResourceController
 
         $inspectionId = (int) $db->insertID();
         $inspection = $db->table('qc_inspections qi')
-            ->select('qi.id, qi.process_id, qi.qc_user_id, u.name AS qc_user_name, qi.inspection_time, qi.quantity')
-            ->join('users u', 'u.id = qi.qc_user_id')
+            ->select('qi.id, qi.process_id, qi.qc_workforce_id, u.name AS qc_user_name, qi.inspection_time, qi.quantity')
+            ->join('workforce u', 'u.id = qi.qc_workforce_id')
             ->where('qi.id', $inspectionId)
             ->get()
             ->getRowArray();
@@ -416,8 +416,8 @@ class ProcessController extends ResourceController
         }
 
         $records = $db->table('process_pic_history ph')
-            ->select('ph.id, ph.process_id, ph.supervisor_id, u.name AS supervisor_name, ph.started_at, ph.ended_at')
-            ->join('users u', 'u.id = ph.supervisor_id')
+            ->select('ph.id, ph.process_id, ph.supervisor_workforce_id, u.name AS supervisor_name, ph.started_at, ph.ended_at')
+            ->join('workforce u', 'u.id = ph.supervisor_workforce_id')
             ->where('ph.process_id', $processId)
             ->orderBy('ph.started_at', 'DESC')
             ->orderBy('ph.id', 'DESC')
@@ -439,14 +439,14 @@ class ProcessController extends ResourceController
             return $this->respondWithError('A JSON request body is required.', 400);
         }
 
-        $supervisorId = $this->positiveId($payload['supervisor_id'] ?? null);
+        $supervisorId = $this->positiveId($payload['supervisor_id'] ?? $payload['supervisor_workforce_id'] ?? null);
         if ($supervisorId === null) {
-            return $this->respondWithError('supervisor_id must be a positive integer.', 422);
+            return $this->respondWithError('supervisor_workforce_id must be a positive integer.', 422);
         }
 
         $db = db_connect();
         $process = $db->table('processes')
-            ->select('id, status, current_supervisor_id')
+            ->select('id, status, current_supervisor_workforce_id')
             ->where('id', $processId)
             ->where('deleted_at', null)            ->get()
             ->getRowArray();
@@ -457,7 +457,7 @@ class ProcessController extends ResourceController
         if ($process['status'] !== 'active') {
             return $this->respondWithError('The PIC can only be changed for an active process.', 409);
         }
-        if ((int) $process['current_supervisor_id'] === $supervisorId) {
+        if ((int) $process['current_supervisor_workforce_id'] === $supervisorId) {
             return $this->respondWithError('The selected supervisor is already the current PIC.', 409);
         }
         if (! $this->userExistsWithRole($db, $supervisorId, 'supervisor')) {
@@ -472,7 +472,7 @@ class ProcessController extends ResourceController
                 ->where('id', $processId)
                 ->where('deleted_at', null)                ->where('status', 'active')
                 ->update([
-                    'current_supervisor_id' => $supervisorId,
+                    'current_supervisor_workforce_id' => $supervisorId,
                     'updated_at'            => $now,
                 ]);
 
@@ -489,7 +489,7 @@ class ProcessController extends ResourceController
 
             $db->table('process_pic_history')->insert([
                 'process_id'    => $processId,
-                'supervisor_id' => $supervisorId,
+                'supervisor_workforce_id' => $supervisorId,
                 'started_at'    => $now,
                 'created_at'    => $now,
             ]);
@@ -512,8 +512,8 @@ class ProcessController extends ResourceController
             'message' => 'Process PIC changed.',
             'data'    => [
                 'process_id'    => $processId,
-                'supervisor_id' => $supervisorId,
-                'supervisor_name' => db_connect()->table('users')
+                'supervisor_workforce_id' => $supervisorId,
+                'supervisor_name' => db_connect()->table('workforce')
                     ->select('name')
                     ->where('id', $supervisorId)
                     ->get()
@@ -536,8 +536,8 @@ class ProcessController extends ResourceController
         }
 
         $records = $db->table('process_operators po')
-            ->select('po.id, po.process_id, po.user_id, u.name AS operator_name, po.assigned_at, po.removed_at')
-            ->join('users u', 'u.id = po.user_id')
+            ->select('po.id, po.process_id, po.workforce_id, u.name AS operator_name, po.assigned_at, po.removed_at')
+            ->join('workforce u', 'u.id = po.workforce_id')
             ->where('po.process_id', $processId)
             ->orderBy('po.assigned_at', 'DESC')
             ->orderBy('po.id', 'DESC')
@@ -585,7 +585,7 @@ class ProcessController extends ResourceController
         }
 
         if ($operatorIds !== []) {
-            $validOperatorCount = $db->table('users')
+            $validOperatorCount = $db->table('workforce')
                 ->whereIn('id', $operatorIds)
                 ->where('role', 'operator')
                 ->where('status', 'active')
@@ -596,12 +596,12 @@ class ProcessController extends ResourceController
         }
 
         $currentRows = $db->table('process_operators')
-            ->select('user_id')
+            ->select('workforce_id')
             ->where('process_id', $processId)
             ->where('removed_at', null)
             ->get()
             ->getResultArray();
-        $currentIds = array_map(static fn (array $row): int => (int) $row['user_id'], $currentRows);
+        $currentIds = array_map(static fn (array $row): int => (int) $row['workforce_id'], $currentRows);
         $toRemove = array_values(array_diff($currentIds, $operatorIds));
         $toAdd = array_values(array_diff($operatorIds, $currentIds));
 
@@ -620,7 +620,7 @@ class ProcessController extends ResourceController
             if ($toRemove !== []) {
                 $db->table('process_operators')
                     ->where('process_id', $processId)
-                    ->whereIn('user_id', $toRemove)
+                    ->whereIn('workforce_id', $toRemove)
                     ->where('removed_at', null)
                     ->update(['removed_at' => $now]);
             }
@@ -629,7 +629,7 @@ class ProcessController extends ResourceController
                 $rows = array_map(
                     static fn (int $operatorId): array => [
                         'process_id'  => $processId,
-                        'user_id'     => $operatorId,
+                        'workforce_id'     => $operatorId,
                         'assigned_at' => $now,
                         'created_at'  => $now,
                     ],
@@ -668,11 +668,11 @@ class ProcessController extends ResourceController
         $machineId    = $this->positiveId($payload['machine_id'] ?? null);
         $sectorId     = $this->positiveId($payload['sector_id'] ?? null);
         $activityId   = $this->positiveId($payload['activity_id'] ?? null);
-        $supervisorId = $this->positiveId($payload['current_supervisor_id'] ?? null);
+        $supervisorId = $this->positiveId($payload['current_supervisor_id'] ?? $payload['current_supervisor_workforce_id'] ?? null);
 
         if ($machineId === null || $sectorId === null || $activityId === null || $supervisorId === null) {
             return $this->respondWithError(
-                'machine_id, sector_id, activity_id, and current_supervisor_id must be positive integers.',
+                'machine_id, sector_id, activity_id, and current_supervisor_workforce_id must be positive integers.',
                 422,
             );
         }
@@ -725,7 +725,7 @@ class ProcessController extends ResourceController
             return $this->respondWithError('The selected sales order does not exist.', 422);
         }
         if ($operatorIds !== []) {
-            $validOperatorCount = $db->table('users')
+            $validOperatorCount = $db->table('workforce')
                 ->whereIn('id', $operatorIds)
                 ->where('role', 'operator')
                 ->where('status', 'active')
@@ -741,12 +741,12 @@ class ProcessController extends ResourceController
 
         try {
             $db->table('processes')->insert([
-                'created_by_user_id'    => (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id'),
+                'created_by_workforce_id'    => (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id'),
                 'machine_id'            => $machineId,
                 'sector_id'             => $sectorId,
                 'activity_id'           => $activityId,
                 'sales_order_id'        => $salesOrderId,
-                'current_supervisor_id' => $supervisorId,
+                'current_supervisor_workforce_id' => $supervisorId,
                 'description'           => $description,
                 'status'                => 'active',
                 'started_at'            => $now,
@@ -758,7 +758,7 @@ class ProcessController extends ResourceController
 
             $db->table('process_pic_history')->insert([
                 'process_id'    => $processId,
-                'supervisor_id' => $supervisorId,
+                'supervisor_workforce_id' => $supervisorId,
                 'started_at'   => $now,
                 'created_at'   => $now,
             ]);
@@ -767,7 +767,7 @@ class ProcessController extends ResourceController
                 $assignments = array_map(
                     static fn (int $userId): array => [
                         'process_id'  => $processId,
-                        'user_id'     => $userId,
+                        'workforce_id'     => $userId,
                         'assigned_at' => $now,
                         'created_at'  => $now,
                     ],
@@ -799,7 +799,7 @@ class ProcessController extends ResourceController
                 'sector_id'             => $sectorId,
                 'activity_id'           => $activityId,
                 'sales_order_id'        => $salesOrderId,
-                'current_supervisor_id' => $supervisorId,
+                'current_supervisor_workforce_id' => $supervisorId,
                 'operator_ids'          => $operatorIds,
                 'description'           => $description,
                 'status'                => 'active',
@@ -954,7 +954,7 @@ class ProcessController extends ResourceController
 
     private function userExistsWithRole($db, int $id, string $role): bool
     {
-        return (bool) $db->table('users')
+        return (bool) $db->table('workforce')
             ->where('id', $id)
             ->where('role', $role)
             ->where('status', 'active')
