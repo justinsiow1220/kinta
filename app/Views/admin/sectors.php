@@ -1,0 +1,10 @@
+<?php
+echo view('admin/partials/master-data/page', [
+    'title' => $title,
+    'kind' => 'sectors',
+    'fields' => $fields,
+    'rows' => $rows,
+    'editRecord' => $editRecord ?? null,
+    'sectors' => $sectors ?? [],
+]);
+?>

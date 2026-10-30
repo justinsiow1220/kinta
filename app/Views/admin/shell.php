@@ -1,1 +1,59 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" type="image/png" href="<?= base_url('kinta-favicon.png') ?>"><link rel="apple-touch-icon" href="<?= base_url('kinta-favicon.png') ?>"><title><?= esc($title) ?> · KINTA</title><style>body{margin:0;font:15px system-ui;background:#f1f5f9;color:#172033}header{background:#073b64;color:white;padding:15px 24px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center}header>strong{grid-column:2;font-size:1.2rem;text-align:center}header>form{grid-column:3;justify-self:end;margin:0}nav{display:flex;gap:14px;flex-wrap:wrap;background:white;padding:12px 24px}nav a,.cards a{color:#075985;text-decoration:none;font-weight:600}main{max-width:1200px;margin:24px auto;padding:0 20px}section,.box{background:white;padding:18px;border-radius:10px;margin:12px 0;box-shadow:0 2px 10px #1111}input,select,button{padding:9px;margin:8px 10px 8px 0;border:1px solid #cbd5e1;border-radius:5px;font:inherit}button{cursor:pointer;background:#087cc1;color:white;border:0}table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:9px;border-bottom:1px solid #e2e8f0;vertical-align:top}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.cards a{background:white;padding:22px;border-radius:9px}.muted{color:#64748b}.error{color:#b91c1c}.inline{display:inline}.inactive{color:#b91c1c}.admin-nav{display:flex;justify-content:center;align-items:center;gap:0;flex-wrap:wrap;background:white;padding:12px 24px}.admin-nav a{padding:10px;border-radius:6px;transition:background-color .15s ease,color .15s ease}.admin-nav a:not(:last-child)::after{content:"|";color:#94a3b8;margin-left:20px}button:hover,button:focus-visible{background:#055d93;color:white}.admin-nav a:hover,.admin-nav a:focus-visible{background:#e5e7eb;color:#172033;text-decoration:none}.view-record{display:inline-flex;align-items:center;justify-content:center;color:#075985;text-decoration:none}.view-record:hover,.view-record:focus-visible{color:#374151}.view-record svg{width:20px;height:20px}</style></head><body><header><strong>KINTA Admin · <?= esc($title) ?></strong><form method="post" action="<?= site_url('admin/logout') ?>"><?= csrf_field() ?><button>Sign out</button></form></header><nav class="admin-nav"><a href="<?= site_url('admin') ?>">Dashboard</a><a href="<?= site_url('admin/workforce') ?>">Workforce</a><a href="<?= site_url('admin/master-data/machines') ?>">Machines</a><a href="<?= site_url('admin/master-data/sectors') ?>">Sectors</a><a href="<?= site_url('admin/master-data/activities') ?>">Activities</a><a href="<?= site_url('admin/master-data/sales-orders') ?>">Sales Orders</a><a href="<?= site_url('admin/master-data/problems') ?>">Problems</a><a href="<?= site_url('admin/operations') ?>">Operation reports</a></nav><main><?= $content ?></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+    <?= $this->include('admin/partials/head', [
+        'title' => $title,
+        'masterDataModule' => $masterDataModule ?? false,
+        'adminModalEnabled' => $adminModalEnabled ?? false,
+    ]) ?>
+</head>
+<body>
+    <div class="admin-layout">
+        <?= $this->include('admin/partials/sidebar') ?>
+
+        <div class="page-content">
+            <div class="page-toolbar">
+                <div>
+                    <h2 class="page-heading"><?= esc($title) ?></h2>
+                    <ol class="breadcrumb">
+                        <li>
+                            <a href="<?= site_url('admin') ?>">Dashboard</a>
+                        </li>
+
+                        <?php foreach (($breadcrumbs ?? []) as $breadcrumb): ?>
+                            <li class="breadcrumb-separator" aria-hidden="true">&rsaquo;</li>
+                            <li>
+                                <?php if (! empty($breadcrumb['url'] ?? null)): ?>
+                                    <a href="<?= esc($breadcrumb['url']) ?>">
+                                        <?= esc($breadcrumb['label'] ?? '') ?>
+                                    </a>
+                                <?php else: ?>
+                                    <?= esc($breadcrumb['label'] ?? '') ?>
+                                <?php endif ?>
+                            </li>
+                        <?php endforeach ?>
+
+                        <?php if (empty($breadcrumbs ?? [])): ?>
+                            <li class="breadcrumb-separator" aria-hidden="true">&rsaquo;</li>
+                            <li aria-current="page"><?= esc($title) ?></li>
+                        <?php endif ?>
+                    </ol>
+                </div>
+
+                <?php if (! empty($toolbarActions ?? '')): ?>
+                    <div class="toolbar-actions">
+                        <?= $toolbarActions ?>
+                    </div>
+                <?php endif ?>
+            </div>
+
+            <main><?= $content ?></main>
+        </div>
+    </div>
+
+    <?= $this->include('admin/partials/scripts', [
+        'masterDataModule' => $masterDataModule ?? false,
+        'adminModalEnabled' => $adminModalEnabled ?? false,
+    ]) ?>
+</body>
+</html>

@@ -14,7 +14,20 @@ $routes->group('admin', ['filter' => 'adminAuth'], static function ($routes) {
     $routes->post('workforce/(:num)/toggle', 'Admin\\PortalController::toggleWorkforce/$1', ['filter' => 'csrf']);
     $routes->get('operations', 'Admin\\PortalController::processes');
     $routes->get('operations/(:num)', 'Admin\\PortalController::processDetails/$1');
-    $routes->get('master-data/(:segment)', 'Admin\\PortalController::master/$1');
+
+    foreach (['machines', 'activities', 'sectors', 'sales-orders', 'problems'] as $module) {
+        $routes->get($module, 'Admin\\PortalController::master/' . $module);
+        $routes->post($module, 'Admin\\PortalController::saveMaster/' . $module, ['filter' => 'csrf']);
+        $routes->post($module . '/(:num)/toggle', 'Admin\\PortalController::toggleMaster/' . $module . '/$1', ['filter' => 'csrf']);
+        $routes->get('master-data/' . $module, static function () use ($module) {
+            $query = http_build_query(service('request')->getGet());
+            $target = '/admin/' . $module . ($query === '' ? '' : '?' . $query);
+
+            return redirect()->to($target, 302);
+        });
+    }
+
+    // Keep the previous POST URLs as direct, CSRF-protected aliases for already-open forms.
     $routes->post('master-data/(:segment)', 'Admin\\PortalController::saveMaster/$1', ['filter' => 'csrf']);
     $routes->post('master-data/(:segment)/(:num)/toggle', 'Admin\\PortalController::toggleMaster/$1/$2', ['filter' => 'csrf']);
 });
