@@ -18,12 +18,11 @@ class EmailController extends BaseController
         );
 
         if (!$success) {
-            $email = service('email');
+            log_message('error', 'KINTA SMTP test email failed.');
 
             return $this->response->setJSON([
                 'success' => false,
                 'message' => 'Email failed to send.',
-                'debug' => $email->printDebugger(),
             ]);
         }
 

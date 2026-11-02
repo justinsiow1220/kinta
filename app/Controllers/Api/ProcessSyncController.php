@@ -204,8 +204,9 @@ class ProcessSyncController extends ResourceController
             if ($process['deleted_at'] !== null) {
                 throw new \RuntimeException('This process was archived on the server. Review the local record before syncing more changes.', 409);
             }
-            if ((int) ($process['created_by_workforce_id'] ?? 0) !== $this->actorUserId) {
-                throw new \RuntimeException('This process is owned by another account or predates account binding. Review it before syncing.', 409);
+            if ((int) ($process['created_by_workforce_id'] ?? 0) !== $this->actorUserId
+                && (int) ($process['current_supervisor_workforce_id'] ?? 0) !== $this->actorUserId) {
+                throw new \RuntimeException('This process is assigned to another supervisor account. Review it before syncing.', 409);
             }
 
             foreach ($qcInspections as $index => $inspection) {

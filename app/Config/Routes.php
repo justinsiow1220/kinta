@@ -31,15 +31,17 @@ $routes->group('admin', ['filter' => 'adminAuth'], static function ($routes) {
     $routes->post('master-data/(:segment)', 'Admin\\PortalController::saveMaster/$1', ['filter' => 'csrf']);
     $routes->post('master-data/(:segment)/(:num)/toggle', 'Admin\\PortalController::toggleMaster/$1/$2', ['filter' => 'csrf']);
 });
-$routes->get('api/flutter-test', 'Api\\FlutterTestController::index');
-$routes->get('api/mysql-test', 'Api\\DatabaseTestController::index');
-$routes->get('api/flutter-db-test', 'Api\\DatabaseTestController::records');
-$routes->get('api/flutter-crud-test', 'Api\\FlutterCrudTestController::index');
-$routes->post('api/flutter-crud-test', 'Api\\FlutterCrudTestController::create');
-$routes->put('api/flutter-crud-test/(:num)', 'Api\\FlutterCrudTestController::update/$1');
-$routes->delete('api/flutter-crud-test/(:num)', 'Api\\FlutterCrudTestController::delete/$1');
-$routes->options('api/flutter-crud-test', 'Api\\FlutterCrudTestController::preflight');
-$routes->options('api/flutter-crud-test/(:num)', 'Api\\FlutterCrudTestController::preflight');
+if (ENVIRONMENT === 'development') {
+    $routes->get('api/flutter-test', 'Api\\FlutterTestController::index');
+    $routes->get('api/mysql-test', 'Api\\DatabaseTestController::index');
+    $routes->get('api/flutter-db-test', 'Api\\DatabaseTestController::records');
+    $routes->get('api/flutter-crud-test', 'Api\\FlutterCrudTestController::index');
+    $routes->post('api/flutter-crud-test', 'Api\\FlutterCrudTestController::create');
+    $routes->put('api/flutter-crud-test/(:num)', 'Api\\FlutterCrudTestController::update/$1');
+    $routes->delete('api/flutter-crud-test/(:num)', 'Api\\FlutterCrudTestController::delete/$1');
+    $routes->options('api/flutter-crud-test', 'Api\\FlutterCrudTestController::preflight');
+    $routes->options('api/flutter-crud-test/(:num)', 'Api\\FlutterCrudTestController::preflight');
+}
 $routes->get('api/master-data/users', 'Api\\MasterDataController::users', ['filter' => 'offlineGrant:master.read']);
 $routes->get('api/master-data/machines', 'Api\\MasterDataController::machines', ['filter' => 'offlineGrant:master.read']);
 $routes->get('api/master-data/sectors', 'Api\\MasterDataController::sectors', ['filter' => 'offlineGrant:master.read']);
@@ -71,4 +73,6 @@ $routes->options('api/processes/(:num)/pic', 'Api\\ProcessController::preflight'
 $routes->get('api/processes/(:num)/operator-history', 'Api\\ProcessController::operatorHistory/$1', ['filter' => 'offlineGrant:process.read']);
 $routes->put('api/processes/(:num)/operators', 'Api\\ProcessController::updateOperators/$1', ['filter' => 'offlineGrant:operator.assign']);
 $routes->options('api/processes/(:num)/operators', 'Api\\ProcessController::preflight');
-$routes->get('api/test-email', 'EmailController::send');
+if (ENVIRONMENT === 'development') {
+    $routes->get('api/test-email', 'EmailController::send');
+}

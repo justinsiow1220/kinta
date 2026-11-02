@@ -13,7 +13,9 @@ class ProcessController extends ResourceController
         $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
         $builder = db_connect()->table('processes p')
             ->select(
-                'p.id, p.created_by_workforce_id, p.status, p.started_at, p.ended_at, '
+                'p.id, p.created_by_workforce_id, '
+                . 'p.current_supervisor_workforce_id AS current_supervisor_id, '
+                . 'p.status, p.started_at, p.ended_at, '
                 . 'p.qty_passed, p.qty_rejected, p.remarks, '
                 . 'm.machine_code, m.machine_name, s.name AS sector_name, '
                 . 'a.name AS activity_name, so.so_number, so.customer_name, '
@@ -26,12 +28,7 @@ class ProcessController extends ResourceController
             ->join('workforce creator', 'creator.id = p.created_by_workforce_id', 'left')
             ->where('p.deleted_at', null);
 
-        // A supervisor's history is limited to records created under their own
-        // authenticated account. The current PIC can change during a process,
-        // so use created_by_workforce_id rather than current PIC for ownership.
-        if ($role !== 'admin') {
-            $builder->where('p.created_by_workforce_id', $actorId);
-        }
+        $this->scopeProcessesToActor($builder, 'p', $actorId, $role);
 
         $records = $builder->orderBy('p.started_at', 'DESC')->orderBy('p.id', 'DESC')->get()->getResultArray();
         return $this->respondWithData('Process records loaded.', $records);
@@ -46,19 +43,11 @@ class ProcessController extends ResourceController
         }
 
         $actorId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
-        $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
         $db = db_connect();
-        $process = $db->table('processes')
-            ->select('id, created_by_workforce_id, status')
-            ->where('id', $processId)
-            ->where('deleted_at', null)
-            ->get()->getRowArray();
+        $process = $this->findAccessibleProcess($db, $processId);
 
         if ($process === null) {
             return $this->respondWithError('Process record not found.', 404);
-        }
-        if ($role !== 'admin' && (int) ($process['created_by_workforce_id'] ?? 0) !== $actorId) {
-            return $this->respondWithError('You may delete only process records created by your account.', 403);
         }
         if ($process['status'] !== 'completed') {
             return $this->respondWithError('Only completed process records can be deleted.', 409);
@@ -86,6 +75,8 @@ class ProcessController extends ResourceController
     public function active()
     {
         $db = db_connect();
+        $actorId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
+        $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
         $records = $db
             ->table('processes p')
             ->select(
@@ -103,8 +94,9 @@ class ProcessController extends ResourceController
             ->join('workforce u', 'u.id = p.current_supervisor_workforce_id')
             ->where('p.status', 'active')
             ->where('p.deleted_at', null)
-            ->orderBy('p.started_at', 'DESC')
-            ->get()
+            ->orderBy('p.started_at', 'DESC');
+        $this->scopeProcessesToActor($records, 'p', $actorId, $role);
+        $records = $records->get()
             ->getResultArray();
 
         if ($records === []) {
@@ -167,9 +159,7 @@ class ProcessController extends ResourceController
             return $this->respondWithError('Process not found.', 404);
         }
 
-        $actorId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
-        $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
-        if ($role !== 'admin' && (int) ($process['created_by_workforce_id'] ?? 0) !== $actorId) {
+        if (! $this->actorCanAccessProcess($process)) {
             // Return the same response as a missing record to avoid revealing
             // whether another supervisor's process ID exists.
             return $this->respondWithError('Process not found.', 404);
@@ -225,7 +215,7 @@ class ProcessController extends ResourceController
         }
 
         $db = db_connect();
-        if (! $db->table('processes')->where('id', $processId)->countAllResults()) {
+        if ($this->findAccessibleProcess($db, $processId) === null) {
             return $this->respondWithError('Process not found.', 404);
         }
 
@@ -264,11 +254,7 @@ class ProcessController extends ResourceController
         }
 
         $db = db_connect();
-        $process = $db->table('processes')
-            ->select('id, status')
-            ->where('id', $processId)
-            ->where('deleted_at', null)            ->get()
-            ->getRowArray();
+        $process = $this->findAccessibleProcess($db, $processId);
 
         if ($process === null) {
             return $this->respondWithError('Process not found.', 404);
@@ -317,7 +303,7 @@ class ProcessController extends ResourceController
         }
 
         $db = db_connect();
-        if (! $db->table('processes')->where('id', $processId)->countAllResults()) {
+        if ($this->findAccessibleProcess($db, $processId) === null) {
             return $this->respondWithError('Process not found.', 404);
         }
 
@@ -356,11 +342,7 @@ class ProcessController extends ResourceController
         $problemIds = array_values(array_unique($problemIds));
 
         $db = db_connect();
-        $process = $db->table('processes')
-            ->select('id, status')
-            ->where('id', $processId)
-            ->where('deleted_at', null)            ->get()
-            ->getRowArray();
+        $process = $this->findAccessibleProcess($db, $processId);
 
         if ($process === null) {
             return $this->respondWithError('Process not found.', 404);
@@ -422,7 +404,7 @@ class ProcessController extends ResourceController
         }
 
         $db = db_connect();
-        if (! $db->table('processes')->where('id', $processId)->countAllResults()) {
+        if ($this->findAccessibleProcess($db, $processId) === null) {
             return $this->respondWithError('Process not found.', 404);
         }
 
@@ -456,11 +438,7 @@ class ProcessController extends ResourceController
         }
 
         $db = db_connect();
-        $process = $db->table('processes')
-            ->select('id, status, current_supervisor_workforce_id')
-            ->where('id', $processId)
-            ->where('deleted_at', null)            ->get()
-            ->getRowArray();
+        $process = $this->findAccessibleProcess($db, $processId);
 
         if ($process === null) {
             return $this->respondWithError('Process not found.', 404);
@@ -542,7 +520,7 @@ class ProcessController extends ResourceController
         }
 
         $db = db_connect();
-        if (! $db->table('processes')->where('id', $processId)->countAllResults()) {
+        if ($this->findAccessibleProcess($db, $processId) === null) {
             return $this->respondWithError('Process not found.', 404);
         }
 
@@ -582,11 +560,7 @@ class ProcessController extends ResourceController
         $operatorIds = array_values(array_unique($operatorIds));
 
         $db = db_connect();
-        $process = $db->table('processes')
-            ->select('id, status')
-            ->where('id', $processId)
-            ->where('deleted_at', null)            ->get()
-            ->getRowArray();
+        $process = $this->findAccessibleProcess($db, $processId);
 
         if ($process === null) {
             return $this->respondWithError('Process not found.', 404);
@@ -849,11 +823,7 @@ class ProcessController extends ResourceController
         $remarks = $remarks === '' ? null : $remarks;
 
         $db = db_connect();
-        $process = $db->table('processes')
-            ->select('id, status')
-            ->where('id', $processId)
-            ->where('deleted_at', null)            ->get()
-            ->getRowArray();
+        $process = $this->findAccessibleProcess($db, $processId);
 
         if ($process === null) {
             return $this->respondWithError('Process not found.', 404);
@@ -930,6 +900,53 @@ class ProcessController extends ResourceController
         $id = filter_var($value, FILTER_VALIDATE_INT);
 
         return $id !== false && $id > 0 ? $id : null;
+    }
+
+    /** Restrict process lists to the authenticated supervisor's records or current assignments. */
+    private function scopeProcessesToActor($builder, string $alias, int $actorId, string $role): void
+    {
+        if ($role === 'admin') {
+            return;
+        }
+
+        $builder->groupStart()
+            ->where($alias . '.created_by_workforce_id', $actorId)
+            ->orWhere($alias . '.current_supervisor_workforce_id', $actorId)
+            ->groupEnd();
+    }
+
+    /** Return a process only when the authenticated user is its creator or current PIC. */
+    private function findAccessibleProcess($db, int $processId): ?array
+    {
+        $role = $this->request->getHeaderLine('X-Kinta-Auth-Role');
+        $builder = $db->table('processes')
+            ->select('id, created_by_workforce_id, current_supervisor_workforce_id, status')
+            ->where('id', $processId)
+            ->where('deleted_at', null);
+
+        if ($role !== 'admin') {
+            $actorId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
+            $builder->groupStart()
+                ->where('created_by_workforce_id', $actorId)
+                ->orWhere('current_supervisor_workforce_id', $actorId)
+                ->groupEnd();
+        }
+
+        return $builder->get()->getRowArray();
+    }
+
+    /** Check ownership for process detail rows already loaded by a query. */
+    private function actorCanAccessProcess(array $process): bool
+    {
+        if ($this->request->getHeaderLine('X-Kinta-Auth-Role') === 'admin') {
+            return true;
+        }
+
+        $actorId = (int) $this->request->getHeaderLine('X-Kinta-Auth-User-Id');
+        $creatorId = (int) ($process['created_by_workforce_id'] ?? 0);
+        $currentPicId = (int) ($process['current_supervisor_workforce_id'] ?? $process['current_supervisor_id'] ?? 0);
+
+        return $actorId > 0 && ($creatorId === $actorId || $currentPicId === $actorId);
     }
 
     private function optionalQuantity(array $payload, string $field, bool &$valid): ?int
