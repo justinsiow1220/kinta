@@ -58,7 +58,7 @@ class ProcessController extends ResourceController
             return $this->respondWithError('Process record not found.', 404);
         }
         if ($role !== 'admin' && (int) ($process['created_by_workforce_id'] ?? 0) !== $actorId) {
-            return $this->respondWithError('You may delete only process records created by your account.', 403);
+            return $this->respondWithError('Process record not found.', 404);
         }
         if ($process['status'] !== 'completed') {
             return $this->respondWithError('Only completed process records can be deleted.', 409);

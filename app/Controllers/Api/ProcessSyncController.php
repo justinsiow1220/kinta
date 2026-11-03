@@ -4,6 +4,7 @@ namespace App\Controllers\Api;
 
 use CodeIgniter\RESTful\ResourceController;
 use App\Libraries\OfflineGrantService;
+use App\Libraries\ProcessSyncActionFingerprint;
 use Throwable;
 
 /**
@@ -12,6 +13,8 @@ use Throwable;
 class ProcessSyncController extends ResourceController
 {
     private ?int $actorUserId = null;
+
+    private int $receiptRaceRetries = 0;
 
     public function preflight()
     {
@@ -111,13 +114,52 @@ class ProcessSyncController extends ResourceController
         }
         $initialSupervisorId ??= $this->positiveId($processData['current_supervisor_id'] ?? $processData['current_supervisor_workforce_id'] ?? null);
 
+        $now = gmdate('Y-m-d H:i:s');
+        $description = $processData['description'] ?? null;
+        $startedAtInput = $processData['started_at'] ?? null;
+        $fingerprintOperatorIds = $operatorIds;
+        sort($fingerprintOperatorIds, SORT_NUMERIC);
         $startKey = $localId . ':start';
         $db = db_connect();
-        if ($serverProcessId === null) {
-            $knownStart = $db->table('process_sync_receipts')
-                ->where('client_action_key', $startKey)
-                ->get()->getRowArray();
-            if ($knownStart !== null) {
+        $knownStart = $db->table('process_sync_receipts')
+            ->where('client_action_key', $startKey)
+            ->get()->getRowArray();
+        $startedAt = null;
+        $startFingerprint = null;
+        if ($serverProcessId === null || $knownStart !== null) {
+            if ($description !== null && ! is_string($description)) {
+                return $this->respondWithError('description must be a string or null.', 422);
+            }
+            try {
+                $startedAt = $this->dateTimeValue($startedAtInput, $now);
+                $startFingerprint = ProcessSyncActionFingerprint::generate('start', $localId, [
+                    'machine_id' => $machineId,
+                    'sector_id' => $sectorId,
+                    'activity_id' => $activityId,
+                    'sales_order_id' => $salesOrderId,
+                    'initial_supervisor_id' => $initialSupervisorId,
+                    'description' => $description,
+                    'started_at' => $this->timestampIdentity($startedAtInput, $now),
+                    'operator_ids' => $fingerprintOperatorIds,
+                ]);
+            } catch (\RuntimeException $exception) {
+                if ($exception->getCode() === 422) {
+                    return $this->respondWithError($exception->getMessage(), 422);
+                }
+                throw $exception;
+            }
+        }
+
+        if ($knownStart !== null) {
+            try {
+                $this->assertReceiptIdentity($knownStart, 'start', $serverProcessId, (string) $startFingerprint);
+            } catch (\RuntimeException $exception) {
+                if ($exception->getCode() !== 409) {
+                    throw $exception;
+                }
+                return $this->respondWithError($exception->getMessage(), 409, 'SYNC_CONFLICT');
+            }
+            if ($serverProcessId === null) {
                 $serverProcessId = (int) $knownStart['process_id'];
             }
         }
@@ -145,7 +187,6 @@ class ProcessSyncController extends ResourceController
             }
         }
 
-        $now = gmdate('Y-m-d H:i:s');
         $db->transBegin();
 
         try {
@@ -154,16 +195,11 @@ class ProcessSyncController extends ResourceController
                     ->where('client_action_key', $startKey)
                     ->get()->getRowArray();
                 if ($startReceipt !== null) {
+                    $this->assertReceiptIdentity($startReceipt, 'start', null, (string) $startFingerprint);
                     $serverProcessId = (int) $startReceipt['process_id'];
                 } else {
                     // Old offline clients sent local timestamps without an offset;
                     // timestamps for an already-created server process are UTC.
-                    $startTimezone = $serverProcessId === null ? 'Asia/Kuala_Lumpur' : 'UTC';
-                    $startedAt = $this->dateTimeValue($processData['started_at'] ?? null, $now, $startTimezone);
-                    $description = $processData['description'] ?? null;
-                    if ($description !== null && ! is_string($description)) {
-                        throw new \RuntimeException('description must be a string or null.', 422);
-                    }
                     $db->table('processes')->insert([
                         'created_by_workforce_id' => $this->actorUserId,
                         'machine_id' => $machineId,
@@ -193,7 +229,7 @@ class ProcessSyncController extends ResourceController
                         ], $operatorIds);
                         $db->table('process_operators')->insertBatch($assignments);
                     }
-                    $this->recordReceipt($db, $startKey, $serverProcessId, 'start', $now);
+                    $this->recordReceipt($db, $startKey, $serverProcessId, 'start', $startFingerprint, $now);
                 }
             }
 
@@ -213,16 +249,25 @@ class ProcessSyncController extends ResourceController
                     throw new \RuntimeException('A QC inspection has an invalid structure.', 422);
                 }
                 $key = $this->eventKey($inspection['client_action_key'] ?? null, $localId . ':qc:' . $index);
-                if ($this->hasReceipt($db, $key)) {
-                    continue;
-                }
                 $qcUserId = $this->positiveId($inspection['qc_user_id'] ?? $inspection['qc_workforce_id'] ?? null);
                 $validQuantity = true;
                 $quantity = $this->optionalQuantity(['quantity' => $inspection['quantity'] ?? null], 'quantity', $validQuantity);
-                if ($qcUserId === null || ! $validQuantity || $quantity === null || ! $this->userExistsWithRole($db, $qcUserId, 'qc')) {
+                if ($qcUserId === null || ! $validQuantity || $quantity === null) {
                     throw new \RuntimeException('A queued QC inspection contains an invalid or inactive QC user or quantity.', 422);
                 }
-                $inspectedAt = $this->dateTimeValue($inspection['inspected_at'] ?? null, $now);
+                $inspectedAtInput = $inspection['inspected_at'] ?? null;
+                $inspectedAt = $this->dateTimeValue($inspectedAtInput, $now);
+                $fingerprint = ProcessSyncActionFingerprint::generate('qc', $localId, [
+                    'qc_user_id' => $qcUserId,
+                    'quantity' => $quantity,
+                    'inspected_at' => $this->timestampIdentity($inspectedAtInput, $now),
+                ]);
+                if ($this->hasMatchingReceipt($db, $key, 'qc', $serverProcessId, $fingerprint)) {
+                    continue;
+                }
+                if (! $this->userExistsWithRole($db, $qcUserId, 'qc')) {
+                    throw new \RuntimeException('A queued QC inspection contains an invalid or inactive QC user or quantity.', 422);
+                }
                 $db->table('qc_inspections')->insert([
                     'process_id' => $serverProcessId,
                     'qc_workforce_id' => $qcUserId,
@@ -231,7 +276,7 @@ class ProcessSyncController extends ResourceController
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
-                $this->recordReceipt($db, $key, $serverProcessId, 'qc', $now);
+                $this->recordReceipt($db, $key, $serverProcessId, 'qc', $fingerprint, $now);
             }
 
             $localPicIds = [];
@@ -256,21 +301,26 @@ class ProcessSyncController extends ResourceController
                 }
                 for ($index = 1; $index < count($localPicIds); $index++) {
                     $key = $this->eventKey($picHistory[$index]['client_action_key'] ?? null, $localId . ':pic:' . $index);
-                    if ($this->hasReceipt($db, $key)) {
+                    $supervisorId = $localPicIds[$index];
+                    $startedAtInput = $picHistory[$index]['started_at'] ?? null;
+                    $startedAt = $this->dateTimeValue($startedAtInput, $now);
+                    $fingerprint = ProcessSyncActionFingerprint::generate('pic', $localId, [
+                        'supervisor_id' => $supervisorId,
+                        'started_at' => $this->timestampIdentity($startedAtInput, $now),
+                    ]);
+                    if ($this->hasMatchingReceipt($db, $key, 'pic', $serverProcessId, $fingerprint)) {
                         continue;
                     }
                     if ($index < count($serverPicIds)) {
-                        $this->recordReceipt($db, $key, $serverProcessId, 'pic', $now);
+                        $this->recordReceipt($db, $key, $serverProcessId, 'pic', $fingerprint, $now);
                         continue;
                     }
                     if ($process['status'] !== 'active') {
                         throw new \RuntimeException('A queued PIC change cannot be applied because the server process is no longer active.', 409);
                     }
-                    $supervisorId = $localPicIds[$index];
                     if (! $this->userExistsWithRole($db, $supervisorId, 'supervisor')) {
                         throw new \RuntimeException('A queued supervisor is no longer active.', 422);
                     }
-                    $startedAt = $this->dateTimeValue($picHistory[$index]['started_at'] ?? null, $now);
                     $db->table('processes')->where('id', $serverProcessId)->update([
                         'current_supervisor_workforce_id' => $supervisorId,
                         'updated_at' => $now,
@@ -283,25 +333,32 @@ class ProcessSyncController extends ResourceController
                         'created_at' => $now,
                     ]);
                     $process['current_supervisor_workforce_id'] = $supervisorId;
-                    $this->recordReceipt($db, $key, $serverProcessId, 'pic', $now);
+                    $this->recordReceipt($db, $key, $serverProcessId, 'pic', $fingerprint, $now);
                 }
             }
 
             if ($end !== null) {
                 $endKey = $this->eventKey($end['client_action_key'] ?? null, $localId . ':end');
-                if (! $this->hasReceipt($db, $endKey)) {
-                    $validPassed = true;
-                    $validRejected = true;
-                    $passed = $this->optionalQuantity($end, 'qty_passed', $validPassed);
-                    $rejected = $this->optionalQuantity($end, 'qty_rejected', $validRejected);
-                    $remarks = $end['remarks'] ?? null;
-                    if (! $validPassed || ! $validRejected || ($remarks !== null && ! is_string($remarks))) {
-                        throw new \RuntimeException('Queued process end values are invalid.', 422);
-                    }
-                    $remarks = is_string($remarks) ? trim($remarks) : null;
-                    $remarks = $remarks === '' ? null : $remarks;
+                $validPassed = true;
+                $validRejected = true;
+                $passed = $this->optionalQuantity($end, 'qty_passed', $validPassed);
+                $rejected = $this->optionalQuantity($end, 'qty_rejected', $validRejected);
+                $remarks = $end['remarks'] ?? null;
+                if (! $validPassed || ! $validRejected || ($remarks !== null && ! is_string($remarks))) {
+                    throw new \RuntimeException('Queued process end values are invalid.', 422);
+                }
+                $remarks = is_string($remarks) ? trim($remarks) : null;
+                $remarks = $remarks === '' ? null : $remarks;
+                $endedAtInput = $end['ended_at'] ?? null;
+                $endedAt = $this->dateTimeValue($endedAtInput, $now);
+                $fingerprint = ProcessSyncActionFingerprint::generate('end', $localId, [
+                    'qty_passed' => $passed,
+                    'qty_rejected' => $rejected,
+                    'remarks' => $remarks,
+                    'ended_at' => $this->timestampIdentity($endedAtInput, $now),
+                ]);
+                if (! $this->hasMatchingReceipt($db, $endKey, 'end', $serverProcessId, $fingerprint)) {
                     if ($process['status'] === 'active') {
-                        $endedAt = $this->dateTimeValue($end['ended_at'] ?? null, $now);
                         $db->table('processes')->where('id', $serverProcessId)->update([
                             'status' => 'completed',
                             'ended_at' => $endedAt,
@@ -322,7 +379,7 @@ class ProcessSyncController extends ResourceController
                         || $process['remarks'] !== $remarks) {
                         throw new \RuntimeException('The server process was completed with different result values.', 409);
                     }
-                    $this->recordReceipt($db, $endKey, $serverProcessId, 'end', $now);
+                    $this->recordReceipt($db, $endKey, $serverProcessId, 'end', $fingerprint, $now);
                 }
             }
 
@@ -335,21 +392,26 @@ class ProcessSyncController extends ResourceController
                     throw new \RuntimeException('A queued problem ID is invalid.', 422);
                 }
                 $key = $this->eventKey($problemRow['client_action_key'] ?? null, $localId . ':problem:' . $problemId . ':' . $index);
-                if ($this->hasReceipt($db, $key)) {
+                $reportedAtInput = $problemRow['reported_at'] ?? null;
+                $reportedAt = $this->dateTimeValue($reportedAtInput, $now);
+                $fingerprint = ProcessSyncActionFingerprint::generate('problem', $localId, [
+                    'problem_id' => $problemId,
+                    'reported_at' => $this->timestampIdentity($reportedAtInput, $now),
+                ]);
+                if ($this->hasMatchingReceipt($db, $key, 'problem', $serverProcessId, $fingerprint)) {
                     continue;
                 }
                 if (! $db->table('problems')->where('id', $problemId)->where('status', 'active')->countAllResults()) {
                     throw new \RuntimeException('A queued problem is no longer active.', 422);
                 }
                 if (! $db->table('process_problems')->where('process_id', $serverProcessId)->where('problem_id', $problemId)->countAllResults()) {
-                    $reportedAt = $this->dateTimeValue($problemRow['reported_at'] ?? null, $now);
                     $db->table('process_problems')->insert([
                         'process_id' => $serverProcessId,
                         'problem_id' => $problemId,
                         'created_at' => $reportedAt,
                     ]);
                 }
-                $this->recordReceipt($db, $key, $serverProcessId, 'problem', $now);
+                $this->recordReceipt($db, $key, $serverProcessId, 'problem', $fingerprint, $now);
             }
 
             if (! $db->transStatus()) {
@@ -358,6 +420,19 @@ class ProcessSyncController extends ResourceController
             $db->transCommit();
         } catch (Throwable $exception) {
             $db->transRollback();
+            if ($this->isReceiptKeyDuplicate($exception)) {
+                if ($this->receiptRaceRetries < 1) {
+                    $this->receiptRaceRetries++;
+                    return $this->sync();
+                }
+
+                return $this->respondWithError(
+                    'The sync action key is already being processed; retry the synchronization.',
+                    409,
+                    'SYNC_CONFLICT',
+                );
+            }
+
             $status = $exception->getCode();
             $status = $status >= 400 && $status <= 599 ? $status : 500;
             if ($status >= 500) {
@@ -397,22 +472,63 @@ class ProcessSyncController extends ResourceController
         return $value;
     }
 
-    private function hasReceipt($db, string $key): bool
+    private function hasMatchingReceipt($db, string $key, string $actionType, int $processId, string $fingerprint): bool
     {
-        return (bool) $db->table('process_sync_receipts')->where('client_action_key', $key)->countAllResults();
+        $receipt = $db->table('process_sync_receipts')
+            ->where('client_action_key', $key)
+            ->get()->getRowArray();
+
+        if ($receipt === null) {
+            return false;
+        }
+
+        $this->assertReceiptIdentity($receipt, $actionType, $processId, $fingerprint);
+        return true;
     }
 
-    private function recordReceipt($db, string $key, int $processId, string $type, string $now): void
+    private function assertReceiptIdentity(array $receipt, string $actionType, ?int $processId, string $fingerprint): void
     {
-        if (! $this->hasReceipt($db, $key)) {
-            $db->table('process_sync_receipts')->insert([
-                'client_action_key' => $key,
-                'process_id' => $processId,
-                'action_type' => $type,
-                'actor_workforce_id' => $this->actorUserId,
-                'created_at' => $now,
-            ]);
+        if (($receipt['action_type'] ?? null) !== $actionType
+            || (int) ($receipt['actor_workforce_id'] ?? 0) !== $this->actorUserId
+            || ($processId !== null && (int) ($receipt['process_id'] ?? 0) !== $processId)
+            || ! is_string($receipt['request_fingerprint'] ?? null)
+            || ! hash_equals((string) $receipt['request_fingerprint'], $fingerprint)) {
+            throw new \RuntimeException(
+                'The sync action key was already used for a different or unverifiable action.',
+                409,
+            );
         }
+    }
+
+    private function recordReceipt($db, string $key, int $processId, string $type, string $fingerprint, string $now): void
+    {
+        $db->table('process_sync_receipts')->insert([
+            'client_action_key' => $key,
+            'process_id' => $processId,
+            'action_type' => $type,
+            'actor_workforce_id' => $this->actorUserId,
+            'request_fingerprint' => $fingerprint,
+            'created_at' => $now,
+        ]);
+    }
+
+    private function timestampIdentity($value, string $fallback): array
+    {
+        if ($value === null || $value === '') {
+            return ['mode' => 'server-default'];
+        }
+
+        return [
+            'mode' => 'explicit',
+            'utc' => $this->dateTimeValue($value, $fallback),
+        ];
+    }
+
+    private function isReceiptKeyDuplicate(Throwable $exception): bool
+    {
+        $message = strtolower($exception->getMessage());
+        return str_contains($message, 'client_action_key')
+            && ((int) $exception->getCode() === 1062 || str_contains($message, 'duplicate entry'));
     }
 
     private function dateTimeValue($value, string $fallback, string $assumedTimezone = 'Asia/Kuala_Lumpur'): string

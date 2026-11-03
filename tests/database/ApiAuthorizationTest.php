@@ -204,8 +204,29 @@ final class ApiAuthorizationTest extends CIUnitTestCase
         $first = $this->withHeaders($headers)->withBodyFormat('json')->post('/api/processes/sync', $payload);
         $first->assertStatus(200);
         $firstData = json_decode($first->getJSON(), true)['data'];
+        self::assertSame('2026-11-03 02:00:00', $this->db->table('processes')->where('id', $firstData['process_id'])->get()->getRowArray()['started_at']);
 
-        $retry = $this->withHeaders($headers)->withBodyFormat('json')->post('/api/processes/sync', $payload);
+        $retryPayload = [
+            'actor_user_id' => $this->ownerId,
+            'local_process_id' => 'offline-retry-001',
+            'process' => [
+                'machine_id' => (string) $machineId,
+                'sector_id' => (string) $sectorId,
+                'activity_id' => (string) $activityId,
+                'current_supervisor_workforce_id' => (string) $this->ownerId,
+                'sales_order_id' => null,
+                'operator_ids' => [],
+                'started_at' => '2026-11-03T02:00:00Z',
+                'description' => 'Synthetic offline retry test',
+            ],
+            'qc_inspections' => [[
+                'client_action_key' => 'offline-retry-001:qc:first',
+                'qc_workforce_id' => (string) $qcUserId,
+                'quantity' => '7',
+                'inspected_at' => '2026-11-03T02:15:00Z',
+            ]],
+        ];
+        $retry = $this->withHeaders($headers)->withBodyFormat('json')->post('/api/processes/sync', $retryPayload);
         $retry->assertStatus(200);
         $retryData = json_decode($retry->getJSON(), true)['data'];
 
@@ -255,6 +276,187 @@ final class ApiAuthorizationTest extends CIUnitTestCase
         $conflict->assertJSONFragment(['error_code' => 'SYNC_CONFLICT']);
         self::assertSame(1, $this->db->table('processes')->countAllResults());
         self::assertSame(2, $this->db->table('process_sync_receipts')->countAllResults());
+        self::assertSame(1, $this->db->table('qc_inspections')->countAllResults());
+        $receipt = $this->db->table('process_sync_receipts')->where('client_action_key', 'offline-conflict-target:start')->get()->getRowArray();
+        self::assertSame('qc', $receipt['action_type']);
+        self::assertSame('active', $this->db->table('processes')->get()->getRowArray()['status']);
+    }
+
+    public function testSameActionKeyWithChangedQcPayloadConflictsWithoutChangingTheEvent(): void
+    {
+        [$machineId, $sectorId, $activityId] = $this->createActiveMasterData();
+        $qcUserId = $this->createUser('test.qc.changed-payload', 'qc');
+        $payload = [
+            'actor_user_id' => $this->ownerId,
+            'local_process_id' => 'offline-changed-payload',
+            'process' => [
+                'machine_id' => $machineId,
+                'sector_id' => $sectorId,
+                'activity_id' => $activityId,
+                'current_supervisor_id' => $this->ownerId,
+            ],
+            'qc_inspections' => [[
+                'client_action_key' => 'offline-changed-payload:qc:one',
+                'qc_user_id' => $qcUserId,
+                'quantity' => 7,
+                'inspected_at' => '2026-11-03 10:15:00',
+            ]],
+        ];
+
+        $first = $this->withHeaders($this->authHeaders($this->ownerId))->withBodyFormat('json')
+            ->post('/api/processes/sync', $payload);
+        $first->assertStatus(200);
+
+        $changedPayload = $payload;
+        $changedPayload['qc_inspections'][0]['quantity'] = 8;
+        $conflict = $this->withHeaders($this->authHeaders($this->ownerId))->withBodyFormat('json')
+            ->post('/api/processes/sync', $changedPayload);
+
+        $conflict->assertStatus(409);
+        $conflict->assertJSONFragment(['error_code' => 'SYNC_CONFLICT']);
+        self::assertSame(1, $this->db->table('processes')->countAllResults());
+        self::assertSame(2, $this->db->table('process_sync_receipts')->countAllResults());
+        self::assertSame(1, $this->db->table('qc_inspections')->countAllResults());
+        self::assertSame(7, (int) $this->db->table('qc_inspections')->get()->getRowArray()['quantity']);
+    }
+
+    public function testSameActionKeyBoundToAnotherProcessConflictsWithoutModifyingEitherProcess(): void
+    {
+        $firstProcessId = $this->createCompletedProcess($this->ownerId);
+        $secondProcessId = $this->createCompletedProcess($this->ownerId);
+        $qcUserId = $this->createUser('test.qc.process-binding', 'qc');
+        $firstPayload = [
+            'actor_user_id' => $this->ownerId,
+            'local_process_id' => 'offline-binding-shared',
+            'server_process_id' => $firstProcessId,
+            'qc_inspections' => [[
+                'client_action_key' => 'offline-binding-qc',
+                'qc_user_id' => $qcUserId,
+                'quantity' => 3,
+                'inspected_at' => '2026-11-03 10:15:00',
+            ]],
+        ];
+        $first = $this->withHeaders($this->authHeaders($this->ownerId))->withBodyFormat('json')
+            ->post('/api/processes/sync', $firstPayload);
+        $first->assertStatus(200);
+
+        $changedBinding = $firstPayload;
+        $changedBinding['server_process_id'] = $secondProcessId;
+        $conflict = $this->withHeaders($this->authHeaders($this->ownerId))->withBodyFormat('json')
+            ->post('/api/processes/sync', $changedBinding);
+
+        $conflict->assertStatus(409);
+        $conflict->assertJSONFragment(['error_code' => 'SYNC_CONFLICT']);
+        self::assertSame(2, $this->db->table('processes')->countAllResults());
+        self::assertSame(1, $this->db->table('process_sync_receipts')->countAllResults());
+        self::assertSame(1, $this->db->table('qc_inspections')->countAllResults());
+        self::assertSame(2, $this->db->table('processes')->where('status', 'completed')->countAllResults());
+        self::assertSame(1, $this->db->table('qc_inspections')->where('process_id', $firstProcessId)->countAllResults());
+        self::assertSame(0, $this->db->table('qc_inspections')->where('process_id', $secondProcessId)->countAllResults());
+    }
+
+    public function testLegacyReceiptWithoutFingerprintFailsClosed(): void
+    {
+        [$machineId, $sectorId, $activityId] = $this->createActiveMasterData();
+        $payload = [
+            'actor_user_id' => $this->ownerId,
+            'local_process_id' => 'offline-legacy-receipt',
+            'process' => [
+                'machine_id' => $machineId,
+                'sector_id' => $sectorId,
+                'activity_id' => $activityId,
+                'current_supervisor_id' => $this->ownerId,
+            ],
+        ];
+        $first = $this->withHeaders($this->authHeaders($this->ownerId))->withBodyFormat('json')
+            ->post('/api/processes/sync', $payload);
+        $first->assertStatus(200);
+        $this->db->table('process_sync_receipts')
+            ->where('client_action_key', 'offline-legacy-receipt:start')
+            ->update(['request_fingerprint' => null]);
+
+        $conflict = $this->withHeaders($this->authHeaders($this->ownerId))->withBodyFormat('json')
+            ->post('/api/processes/sync', $payload);
+
+        $conflict->assertStatus(409);
+        $conflict->assertJSONFragment(['error_code' => 'SYNC_CONFLICT']);
+        self::assertSame(1, $this->db->table('processes')->countAllResults());
+        self::assertSame(1, $this->db->table('process_sync_receipts')->countAllResults());
+    }
+
+    public function testNormalSyncActionsRemainIdempotentAcrossStartQcPicEndAndProblem(): void
+    {
+        [$machineId, $sectorId, $activityId] = $this->createActiveMasterData();
+        $qcUserId = $this->createUser('test.qc.normal-sync', 'qc');
+        $operatorId = $this->createUser('test.operator.normal-sync', 'operator');
+        $nextSupervisorId = $this->createSupervisor('test.supervisor.normal-sync');
+        $now = date('Y-m-d H:i:s');
+        $this->db->table('problems')->insert([
+            'code' => 'TEST-NORMAL-SYNC-' . bin2hex(random_bytes(4)),
+            'name' => 'TEST Normal Sync Problem',
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $problemId = (int) $this->db->insertID();
+
+        $payload = [
+            'actor_user_id' => $this->ownerId,
+            'local_process_id' => 'offline-normal-action-flow',
+            'process' => [
+                'machine_id' => $machineId,
+                'sector_id' => $sectorId,
+                'activity_id' => $activityId,
+                'current_supervisor_id' => $this->ownerId,
+                'operator_ids' => [$operatorId],
+                'started_at' => '2026-11-03 10:00:00',
+            ],
+            'qc_inspections' => [[
+                'client_action_key' => 'normal-flow-qc',
+                'qc_user_id' => $qcUserId,
+                'quantity' => 4,
+                'inspected_at' => '2026-11-03 10:15:00',
+            ]],
+            'pic_history' => [
+                ['supervisor_id' => $this->ownerId, 'started_at' => '2026-11-03 10:00:00'],
+                [
+                    'client_action_key' => 'normal-flow-pic',
+                    'supervisor_workforce_id' => $nextSupervisorId,
+                    'started_at' => '2026-11-03 10:30:00',
+                ],
+            ],
+            'end' => [
+                'client_action_key' => 'normal-flow-end',
+                'qty_passed' => 4,
+                'qty_rejected' => 0,
+                'remarks' => '  Completed normally  ',
+                'ended_at' => '2026-11-03 11:00:00',
+            ],
+            'problems' => [[
+                'client_action_key' => 'normal-flow-problem',
+                'problem_id' => $problemId,
+                'reported_at' => '2026-11-03 10:45:00',
+            ]],
+        ];
+        $headers = $this->authHeaders($this->ownerId);
+        $first = $this->withHeaders($headers)->withBodyFormat('json')->post('/api/processes/sync', $payload);
+        $first->assertStatus(200);
+        $processId = (int) json_decode($first->getJSON(), true)['data']['process_id'];
+
+        $retryPayload = $payload;
+        $retryPayload['server_process_id'] = $processId;
+        $retry = $this->withHeaders($headers)->withBodyFormat('json')->post('/api/processes/sync', $retryPayload);
+        $retry->assertStatus(200);
+
+        self::assertSame(1, $this->db->table('processes')->countAllResults());
+        self::assertSame(5, $this->db->table('process_sync_receipts')->countAllResults());
+        self::assertSame(1, $this->db->table('qc_inspections')->countAllResults());
+        self::assertSame(2, $this->db->table('process_pic_history')->countAllResults());
+        self::assertSame(1, $this->db->table('process_operators')->countAllResults());
+        self::assertSame(1, $this->db->table('process_problems')->countAllResults());
+        $process = $this->db->table('processes')->where('id', $processId)->get()->getRowArray();
+        self::assertSame('completed', $process['status']);
+        self::assertSame('Completed normally', $process['remarks']);
     }
 
     public function testOfflineSyncCannotClaimAnotherAccountsQueuedProcess(): void
@@ -333,11 +535,12 @@ final class ApiAuthorizationTest extends CIUnitTestCase
     private function createCompletedProcess(int $ownerId): int
     {
         $now = date('Y-m-d H:i:s');
-        $this->db->table('machines')->insert(['machine_code' => 'TEST-MACHINE-' . $ownerId, 'machine_name' => 'TEST Machine', 'status' => 'active', 'created_at' => $now]);
+        $suffix = bin2hex(random_bytes(4));
+        $this->db->table('machines')->insert(['machine_code' => 'TEST-MACHINE-' . $ownerId . '-' . $suffix, 'machine_name' => 'TEST Machine', 'status' => 'active', 'created_at' => $now]);
         $machineId = (int) $this->db->insertID();
-        $this->db->table('sectors')->insert(['name' => 'TEST Sector ' . $ownerId, 'status' => 'active', 'created_at' => $now, 'updated_at' => $now]);
+        $this->db->table('sectors')->insert(['name' => 'TEST Sector ' . $ownerId . '-' . $suffix, 'status' => 'active', 'created_at' => $now, 'updated_at' => $now]);
         $sectorId = (int) $this->db->insertID();
-        $this->db->table('activities')->insert(['sector_id' => $sectorId, 'name' => 'TEST Activity ' . $ownerId, 'status' => 'active', 'created_at' => $now, 'updated_at' => $now]);
+        $this->db->table('activities')->insert(['sector_id' => $sectorId, 'name' => 'TEST Activity ' . $ownerId . '-' . $suffix, 'status' => 'active', 'created_at' => $now, 'updated_at' => $now]);
         $activityId = (int) $this->db->insertID();
         $this->db->table('processes')->insert([
             'machine_id' => $machineId,
