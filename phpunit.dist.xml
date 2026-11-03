@@ -2,7 +2,7 @@
 <phpunit
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
-    bootstrap="vendor/codeigniter4/framework/system/Test/bootstrap.php"
+    bootstrap="tests/bootstrap.php"
     backupGlobals="false"
     beStrictAboutOutputDuringTests="true"
     colors="true"
@@ -51,14 +51,15 @@
         <const name="CONFIGPATH" value="./app/Config/"/>
         <!-- Directory containing the front controller (index.php) -->
         <const name="PUBLICPATH" value="./public/"/>
-        <!-- Database configuration -->
-        <!-- Uncomment to provide your own database for testing
+        <!-- Configure a dedicated local MySQL database for automated tests.
+             Do not point this group at your development database. Keep DBPrefix
+             empty because application migrations use unprefixed table names.
+             Configure credentials in ignored phpunit.xml or local environment.
             <env name="database.tests.hostname" value="localhost"/>
-            <env name="database.tests.database" value="tests"/>
+            <env name="database.tests.database" value="kinta_test"/>
             <env name="database.tests.username" value="tests_user"/>
             <env name="database.tests.password" value=""/>
             <env name="database.tests.DBDriver" value="MySQLi"/>
-            <env name="database.tests.DBPrefix" value="tests_"/>
-            -->
+            <env name="database.tests.DBPrefix" value=""/>
     </php>
 </phpunit>

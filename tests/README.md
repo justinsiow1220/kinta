@@ -33,12 +33,23 @@ for code coverage to be calculated successfully. After installing `XDebug`, you 
 
 ## Setting Up
 
-A number of the tests use a running database.
-In order to set up the database edit the details for the `tests` group in
-**app/Config/Database.php** or **.env**.
-Make sure that you provide a database engine that is currently running on your machine.
-More details on a test database setup are in the
-[Testing Your Database](https://codeigniter.com/user_guide/testing/database.html) section of the documentation.
+The database and API integration tests run migrations and modify records. Use a
+dedicated, disposable MySQL database for the `tests` group. Never point it at a
+development or production database. The test bootstrap checks that the
+environment is `testing`, the default group is `tests`, the driver is `MySQLi`,
+the configured database name contains `test`, and the active database matches
+that configuration and differs from the default database. It stops PHPUnit
+before test execution if any check fails.
+
+Create the empty test database locally, then copy **phpunit.dist.xml** to the
+git-ignored **phpunit.xml**. Uncomment and configure the `database.tests.*`
+entries there using credentials from your local MySQL setup. Keep the test
+database name distinct from the default database and leave `DBPrefix` empty,
+because the application migrations create unprefixed tables. Do not commit
+local database credentials or `phpunit.xml`.
+
+More details on CI4 database testing are in the
+[Testing Your Database](https://codeigniter.com/user_guide/testing/database.html) section.
 
 ## Running the tests
 
